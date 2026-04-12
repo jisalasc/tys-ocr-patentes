@@ -1,0 +1,16 @@
+# Python
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/.env
+
+# Google credentials
+*.json
+
+# Node (para el frontend que viene después)
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+
+# VS Code
+.vscode/
