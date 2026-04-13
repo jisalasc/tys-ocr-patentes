@@ -11,19 +11,27 @@ from procesador import procesar_zip
 
 app = FastAPI(title="OCR Patentes Backend")
 
-# CORS abierto para facilitar desarrollo local del frontend.
+# CORS configurado para desarrollo y producción
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "https://tys-ocr-patentes-105536109273.us-central1.run.app",
+    ],
+    allow_credentials=False,  # No necesario con JWT en headers
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+    class Config:
+        str_strip_whitespace = True
 
 
 @app.get("/")
