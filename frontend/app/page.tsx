@@ -106,18 +106,7 @@ export default function HomePage() {
     setDownloadBlob(null);
 
     try {
-      const formData = new FormData();
-      formData.append("file", selectedFile);
-
-      const response = await fetch(`${apiUrl}/procesar`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        body: formData,
-      });
-
-      if (response.status === 401) {
+      const handleUnauthorized = () => {
         localStorage.removeItem("token");
         setResultOk(false);
         setResultMessage("Sesión expirada, por favor ingresa de nuevo");
@@ -125,13 +114,26 @@ export default function HomePage() {
         setTimeout(() => {
           router.push("/login");
         }, 2000);
+      };
+
+      const uploadUrlResponse = await fetch(`${apiUrl}/upload-url`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ filename: selectedFile.name }),
+      });
+
+      if (uploadUrlResponse.status === 401) {
+        handleUnauthorized();
         return;
       }
 
-      if (!response.ok) {
-        let errorText = "Ocurrio un error al procesar el archivo.";
+      if (!uploadUrlResponse.ok) {
+        let errorText = "No se pudo generar la URL de subida.";
         try {
-          const data = (await response.json()) as { detail?: string };
+          const data = (await uploadUrlResponse.json()) as { detail?: string };
           if (data.detail) {
             errorText = data.detail;
           }
@@ -144,7 +146,69 @@ export default function HomePage() {
         return;
       }
 
-      const imagesHeader = response.headers.get("x-images-processed");
+      const uploadUrlData = (await uploadUrlResponse.json()) as {
+        upload_url?: string;
+        upload_id?: string;
+      };
+
+      if (!uploadUrlData.upload_url || !uploadUrlData.upload_id) {
+        setResultOk(false);
+        setResultMessage("Respuesta invalida al solicitar URL de subida.");
+        setViewState("result");
+        return;
+      }
+
+      const uploadToGcsResponse = await fetch(uploadUrlData.upload_url, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/zip",
+        },
+        body: selectedFile,
+      });
+
+      if (uploadToGcsResponse.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+
+      if (uploadToGcsResponse.status !== 200) {
+        setResultOk(false);
+        setResultMessage("No se pudo subir el archivo a almacenamiento.");
+        setViewState("result");
+        return;
+      }
+
+      const processGcsResponse = await fetch(`${apiUrl}/procesar-gcs`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ upload_id: uploadUrlData.upload_id }),
+      });
+
+      if (processGcsResponse.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+
+      if (!processGcsResponse.ok) {
+        let errorText = "Ocurrio un error al procesar el archivo.";
+        try {
+          const data = (await processGcsResponse.json()) as { detail?: string };
+          if (data.detail) {
+            errorText = data.detail;
+          }
+        } catch {
+          // Keep default message when backend does not return JSON.
+        }
+        setResultOk(false);
+        setResultMessage(errorText);
+        setViewState("result");
+        return;
+      }
+
+      const imagesHeader = processGcsResponse.headers.get("x-images-processed");
       if (imagesHeader) {
         const parsed = Number(imagesHeader);
         if (!Number.isNaN(parsed)) {
@@ -152,7 +216,31 @@ export default function HomePage() {
         }
       }
 
-      const blob = await response.blob();
+      const processData = (await processGcsResponse.json()) as { download_url?: string };
+      if (!processData.download_url) {
+        setResultOk(false);
+        setResultMessage("Respuesta invalida al procesar el archivo.");
+        setViewState("result");
+        return;
+      }
+
+      const downloadResponse = await fetch(processData.download_url, {
+        method: "GET",
+      });
+
+      if (downloadResponse.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+
+      if (!downloadResponse.ok) {
+        setResultOk(false);
+        setResultMessage("No se pudo descargar el resultado procesado.");
+        setViewState("result");
+        return;
+      }
+
+      const blob = await downloadResponse.blob();
       setDownloadBlob(blob);
       setResultOk(true);
       setResultMessage("¡Proceso completado!");

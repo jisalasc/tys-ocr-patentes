@@ -9,7 +9,6 @@ from typing import Optional, Tuple
 
 from dotenv import load_dotenv
 from google.cloud import vision
-from google.oauth2 import service_account
 
 
 load_dotenv()
@@ -44,7 +43,8 @@ class OCRWord:
 def _build_vision_client() -> vision.ImageAnnotatorClient:
     raw_credentials = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
     if not raw_credentials:
-        raise RuntimeError("GOOGLE_CREDENTIALS_JSON no esta configurado.")
+        # En Cloud Run usamos Application Default Credentials.
+        return vision.ImageAnnotatorClient()
 
     # Permite credenciales envueltas en comillas al venir desde .env.
     if (
@@ -58,8 +58,7 @@ def _build_vision_client() -> vision.ImageAnnotatorClient:
     except json.JSONDecodeError as exc:
         raise RuntimeError("GOOGLE_CREDENTIALS_JSON no contiene un JSON valido.") from exc
 
-    credentials = service_account.Credentials.from_service_account_info(info)
-    return vision.ImageAnnotatorClient(credentials=credentials)
+    return vision.ImageAnnotatorClient.from_service_account_info(info)
 
 
 @lru_cache(maxsize=1)
