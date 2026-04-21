@@ -16,6 +16,7 @@ export default function HomePage() {
   const [resultMessage, setResultMessage] = useState("");
   const [processedImages, setProcessedImages] = useState<number | null>(null);
   const [downloadBlob, setDownloadBlob] = useState<Blob | null>(null);
+  const [debugOcr, setDebugOcr] = useState(true);
 
   useEffect(() => {
     const storedToken = localStorage.getItem("token");
@@ -184,7 +185,7 @@ export default function HomePage() {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ upload_id: uploadUrlData.upload_id }),
+        body: JSON.stringify({ upload_id: uploadUrlData.upload_id, debug_ocr: debugOcr }),
       });
 
       if (processGcsResponse.status === 401) {
@@ -325,6 +326,16 @@ export default function HomePage() {
             >
               Procesar
             </button>
+
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={debugOcr}
+                onChange={(event) => setDebugOcr(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-300"
+              />
+              Incluir debug OCR para pruebas (CSV detallado)
+            </label>
           </section>
         )}
 

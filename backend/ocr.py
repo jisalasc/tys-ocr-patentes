@@ -17,9 +17,36 @@ load_dotenv()
 PLATE_PATTERNS = [
     re.compile(r"^[A-Z]{2}[0-9]{2}[A-Z]{2}$"),  # Chile antiguo: AB12CD
     re.compile(r"^[A-Z]{4}[0-9]{2}$"),  # Chile nuevo: ABCD12
+    re.compile(r"^[A-Z]{2}[0-9]{4}$"),  # Formato solicitado: AB1234 (AB 12 34)
     re.compile(r"^[A-Z]{3}[0-9]{3}$"),  # Argentina: ABC123
     re.compile(r"^[A-Z]{2}[0-9]{3}[A-Z]{2}$"),  # Argentina: AB123CD
 ]
+
+MAX_CHAR_SUBSTITUTIONS = int(os.getenv("OCR_MAX_CHAR_SUBSTITUTIONS", "1"))
+SUBSTITUTION_PENALTY = float(os.getenv("OCR_SUBSTITUTION_PENALTY", "0.08"))
+MIN_STRUCTURED_WORD_CONFIDENCE = float(
+    os.getenv("OCR_MIN_STRUCTURED_WORD_CONFIDENCE", "0.78")
+)
+
+CHAR_SUBSTITUTIONS = {
+    "0": ("0", "O"),
+    "O": ("O", "0"),
+    "1": ("1", "I"),
+    "I": ("I", "1"),
+}
+
+CANDIDATE_PREFIX_BLACKLIST = {
+    prefix.strip().upper()
+    for prefix in os.getenv("OCR_CANDIDATE_PREFIX_BLACKLIST", "BENZ").split(",")
+    if prefix.strip()
+}
+
+
+def _is_blocked_candidate(candidate: str) -> bool:
+    if len(candidate) == 6 and candidate[:4].isalpha() and candidate[4:].isdigit():
+        if candidate[:4] in CANDIDATE_PREFIX_BLACKLIST:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -119,16 +146,43 @@ def _extract_words_with_confidence(
     return words
 
 
-def _candidate_variants(token: str) -> list[str]:
-    variants = {token}
-    variants.add(token.replace("0", "O"))
-    variants.add(token.replace("O", "0"))
-    variants.add(token.replace("1", "I"))
-    variants.add(token.replace("I", "1"))
-    return [variant for variant in variants if variant]
+def _candidate_variants(
+    token: str,
+    allow_substitutions: bool,
+) -> list[Tuple[str, int]]:
+    if not token:
+        return []
+
+    if not allow_substitutions:
+        return [(token, 0)]
+
+    options_per_char: list[Tuple[str, ...]] = []
+    for char in token:
+        options_per_char.append(CHAR_SUBSTITUTIONS.get(char, (char,)))
+
+    variants: list[Tuple[str, int]] = []
+    for chars in product(*options_per_char):
+        candidate = "".join(chars)
+        substitutions = sum(1 for source, target in zip(token, chars) if source != target)
+        if substitutions <= MAX_CHAR_SUBSTITUTIONS:
+            variants.append((candidate, substitutions))
+
+    # Evitamos duplicados preservando el menor numero de sustituciones por variante.
+    best_per_candidate: dict[str, int] = {}
+    for candidate, substitutions in variants:
+        prev = best_per_candidate.get(candidate)
+        if prev is None or substitutions < prev:
+            best_per_candidate[candidate] = substitutions
+
+    return sorted(best_per_candidate.items(), key=lambda item: (item[1], item[0]))
 
 
-def _find_best_plate_from_tokens(tokens: list[str], confidences: list[float]) -> Tuple[Optional[str], float]:
+def _find_best_plate_from_tokens(
+    tokens: list[str],
+    confidences: list[float],
+    *,
+    allow_substitutions: bool,
+) -> Tuple[Optional[str], float]:
     best_plate: Optional[str] = None
     best_confidence = 0.0
 
@@ -143,17 +197,22 @@ def _find_best_plate_from_tokens(tokens: list[str], confidences: list[float]) ->
                 continue
 
             chunk_confidences = confidences[start:end]
-            candidate_options = product(*[_candidate_variants(token) for token in chunk_tokens])
+            candidate_options = product(
+                *[
+                    _candidate_variants(token, allow_substitutions=allow_substitutions)
+                    for token in chunk_tokens
+                ]
+            )
             for option in candidate_options:
-                candidate = "".join(option)
+                candidate = "".join(variant for variant, _ in option)
+                substitutions = sum(count for _, count in option)
                 if not any(pattern.fullmatch(candidate) for pattern in PLATE_PATTERNS):
+                    continue
+                if _is_blocked_candidate(candidate):
                     continue
 
                 confidence = float(mean(chunk_confidences))
-                # Le damos una leve preferencia a secuencias cortas y compactas como HTVW55.
-                confidence += 0.01 * (3 - len(chunk_tokens))
-                if len(candidate) == 6:
-                    confidence += 0.01
+                confidence -= SUBSTITUTION_PENALTY * substitutions
 
                 if confidence > best_confidence:
                     best_plate = candidate
@@ -196,7 +255,11 @@ def _find_first_plate(text: str) -> Optional[str]:
     if not tokens:
         return None
 
-    plate, _ = _find_best_plate_from_tokens(tokens, [0.5] * len(tokens))
+    plate, _ = _find_best_plate_from_tokens(
+        tokens,
+        [0.5] * len(tokens),
+        allow_substitutions=False,
+    )
     return plate
 
 
@@ -207,7 +270,11 @@ def _find_best_plate_from_words(words: list[OCRWord]) -> Tuple[Optional[str], fl
     for line in _group_words_into_lines(words):
         tokens = [word.text for word in line]
         confidences = [word.confidence for word in line]
-        plate, confidence = _find_best_plate_from_tokens(tokens, confidences)
+        plate, confidence = _find_best_plate_from_tokens(
+            tokens,
+            confidences,
+            allow_substitutions=True,
+        )
         if plate and confidence > best_confidence:
             best_plate = plate
             best_confidence = confidence
@@ -218,10 +285,11 @@ def _find_best_plate_from_words(words: list[OCRWord]) -> Tuple[Optional[str], fl
 def detect_plate_with_debug(image_bytes: bytes) -> Tuple[Optional[str], float, str, str]:
     client = _get_vision_client()
     image = vision.Image(content=image_bytes)
+    image_context = vision.ImageContext(language_hints=["es", "en"])
 
     # text_detection suele rendir mejor en patentes cortas; document_text_detection aporta confianza.
-    text_response = client.text_detection(image=image)
-    doc_response = client.document_text_detection(image=image)
+    text_response = client.text_detection(image=image, image_context=image_context)
+    doc_response = client.document_text_detection(image=image, image_context=image_context)
 
     if text_response.error.message:
         print(f"Vision text_detection error: {text_response.error.message}")
@@ -235,7 +303,7 @@ def detect_plate_with_debug(image_bytes: bytes) -> Tuple[Optional[str], float, s
 
     words = _extract_words_with_confidence(doc_response)
     plate_from_words, words_confidence = _find_best_plate_from_words(words)
-    if plate_from_words:
+    if plate_from_words and words_confidence >= MIN_STRUCTURED_WORD_CONFIDENCE:
         words_text = " ".join(word.text for word in words)
         return plate_from_words, words_confidence, words_text, "words"
 

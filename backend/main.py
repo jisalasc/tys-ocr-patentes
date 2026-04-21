@@ -46,6 +46,7 @@ class UploadUrlRequest(BaseModel):
 
 class ProcessGCSRequest(BaseModel):
     upload_id: str
+    debug_ocr: bool = False
 
     class Config:
         str_strip_whitespace = True
@@ -201,7 +202,7 @@ def procesar_gcs(
         )
 
     try:
-        output_zip_bytes = procesar_zip(input_zip_bytes)
+        output_zip_bytes = procesar_zip(input_zip_bytes, include_ocr_debug=payload.debug_ocr)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
