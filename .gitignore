@@ -6,6 +6,7 @@ backend/.env
 
 # Google credentials
 *.json
+!vercel.json
 
 # Node (para el frontend que viene después)
 frontend/node_modules/
